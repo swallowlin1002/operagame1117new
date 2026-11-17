@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>歌劇停看聽 - 互動闖關遊戲</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <!-- Firebase App & Firestore SDK (Compat) -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-pink-50 via-purple-50 to-blue-50 min-h-screen text-slate-800 flex flex-col justify-between">
+
+    <!-- 主容器 -->
+    <div id="app" class="max-w-4xl mx-auto w-full p-4 sm:p-6 flex-1 flex flex-col justify-center">
+        <!-- 內容由 JavaScript 動態渲染 -->
+    </div>
+
+    <!-- 自訂彈跳視窗 (Modal) -->
+    <div id="custom-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-purple-100 animate-fade-in text-center">
+            <div id="modal-icon" class="text-4xl mb-3">💡</div>
+            <h3 id="modal-title" class="text-xl font-bold text-slate-800 mb-2">提示訊息</h3>
+            <p id="modal-message" class="text-slate-600 mb-6 leading-relaxed whitespace-pre-line"></p>
+            <button onclick="closeModal()" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition shadow-lg shadow-purple-200">
+                我知道了
+            </button>
+        </div>
+    </div>
+
+    <!-- 腳本邏輯 -->
+    <script>
+        // ==================== Firebase 雲端設定 ====================
+        const firebaseConfig = {
+            apiKey: "AIzaSyB6x2igA6xLiDH5rITc054m0tfk_PscIrw",
+            authDomain: "grade8music.firebaseapp.com",
+            projectId: "grade8music",
+            storageBucket: "grade8music.firebasestorage.app",
+            messagingSenderId: "1055149400918",
+            appId: "1:1055149400918:web:86c5f2a83644b54bd62cf7"
+        };
+        
+        let db = null;
+        try {
+            if (!firebase.apps.length) {
+                firebase.initializeApp(firebaseConfig);
+            }
+            db = firebase.firestore();
+        } catch (e) {
+            console.warn("Firebase 初始化提示：", e);
+        }
+
+        // ==================== 遊戲狀態變數 ====================
+        let gameState = 'home'; // home, playing, teacher_login, teacher_dashboard, certificate
+        let currentUser = { studentId: '', classId: '' };
+        let currentLevel = 1; // 1, 2, 3
+        let currentQuestionIndex = 0;
+        let score = 0;
+        let startTime = 0;
+        let timerInterval = null;
+        let elapsedTime = 0;
+        let levelQuestions = [];
+        let teacherPassword = localStorage.getItem('teacher_pass') || 'admin';
+
+        // 原始題庫（基於康軒國中音樂2上第六課）
+        const rawPoolLevel1 = [
+            { q: "歌劇最早發源於哪一個國家？", opts: ["義大利", "德國", "法國", "英國"], ans: 0 },
+            { q: "歌劇誕生於大約哪一個世紀末？", opts: ["十六世紀末", "十八世紀末", "十四世紀末", "二十世紀末"], ans: 0 },
+            { q: "歌劇發源於義大利的哪一個城市？", opts: ["佛羅倫斯", "羅馬", "威尼斯", "米蘭"], ans: 0 },
+            { q: "推動復興古希臘戲劇藝術的「同好會」是由誰發起的？", opts: ["巴爾第伯爵", "莫札特", "威爾第", "普契尼"], ans: 0 },
+            { q: "目前所知最早被稱為歌劇的作品是？", opts: ["《達芙尼》", "《尤麗狄斯》", "《奧菲歐》", "《魔笛》"], ans: 0 },
+            { q: "現存最古老的歌劇是？", opts: ["《尤麗狄斯》", "《達芙尼》", "《茶花女》", "《托斯卡》"], ans: 0 },
+            { q: "世界上第一座公共歌劇院「聖卡西亞諾劇院」位於何處？", opts: ["威尼斯", "佛羅倫斯", "羅馬", "拿坡里"], ans: 0 },
+            { q: "1637年建立的威尼斯聖卡西亞諾劇院是世界上第一座什麼樣的劇院？", opts: ["公共歌劇院", "皇家歌劇院", "露天劇場", "木偶劇院"], ans: 0 },
+            { q: "強調歌劇中的音樂地位，充滿戲劇性的流派主要位於？", opts: ["威尼斯", "佛羅倫斯", "羅馬", "拿坡里"], ans: 0 },
+            { q: "趨於保守的道德劇，但講究佈景華麗的流派位於？", opts: ["羅馬", "威尼斯", "拿坡里", "佛羅倫斯"], ans: 0 },
+            { q: "哪一個世紀開始被視為歌劇發展的黃金時期？", opts: ["十八世紀", "十六世紀", "十七世紀", "二十世紀"], ans: 0 },
+            { q: "歌劇傳入其他國家後，德國發展出了哪種歌劇類型？", opts: ["德國歌唱劇", "法國大歌劇", "英國歌謠劇", "輕歌劇"], ans: 0 },
+            { q: "17世紀在歌劇史上被稱為什麼時期？", opts: ["起源與巴洛克時期", "古典主義時期", "浪漫主義時期", "寫實主義時期"], ans: 0 },
+            { q: "19世紀在歌劇發展中屬於什麼時代？", opts: ["浪漫主義與樂劇時代", "起源與巴洛克時期", "歌劇改革時期", "無調性音樂時代"], ans: 0 },
+            { q: "20世紀至今的歌劇特色包含？", opts: ["寫實主義與多元化", "僅有美聲唱法", "純古典主義", "無伴奏人聲"], ans: 0 }
+        ];
+
+        const rawPoolLevel2 = [
+            { q: "將十八世紀喜歌劇發展至顛峰的作曲家是？", opts: ["莫札特", "威爾第", "華格納", "普契尼"], ans: 0 },
+            { q: "莫札特生前完成的最後一部二幕歌劇作品是？", opts: ["《魔笛》", "《費加洛婚禮》", "《唐·喬望尼》", "《茶花女》"], ans: 0 },
+            { q: "在《費加洛婚禮》中，年輕男僕凱魯比諾的角色通常由什麼音色反串？", opts: ["次女高音", "男高音", "男低音", "花腔女高音"], ans: 0 },
+            { q: "義大利歌劇巨擘，作品充滿愛國情懷與細膩人性描繪的是？", opts: ["威爾第", "莫札特", "華格納", "普契尼"], ans: 0 },
+            { q: "威爾第改編自小仲馬同名小說的著名歌劇是？", opts: ["《茶花女》", "《納布果》", "《阿伊達》", "《弄臣》"], ans: 0 },
+            { q: "《茶花女》女主角薇奧麗塔最終因為罹患什麼病而離世？", opts: ["肺結核", "心臟病", "流感", "肺炎"], ans: 0 },
+            { q: "創辦樂劇時代、強調總體藝術的德國作曲家是？", opts: ["理查．華格納", "莫札特", "威爾第", "普契尼"], ans: 0 },
+            { q: "華格納耗時26年完成的宏大巨作是？", opts: ["《尼貝龍根的指環》", "《唐懷瑟》", "《羅恩格林》", "《崔斯坦與伊索德》"], ans: 0 },
+            { q: "擅長描繪市井小民悲歡離合、浪漫與寫實主義結合的義大利作曲家是？", opts: ["浦契尼", "莫札特", "威爾第", "華格納"], ans: 0 },
+            { q: "浦契尼未完成的遺作，後由阿爾法諾補寫完成的歌劇是？", opts: ["《杜蘭朵公主》", "《波希米亞人》", "《托斯卡》", "《蝴蝶夫人》"], ans: 0 },
+            { q: "《波希米亞人》又被譯為什麼名字？", opts: ["《藝術家的生涯》", "《流浪者之歌》", "《巴黎狂歡》", "《貧窮青春》"], ans: 0 },
+            { q: "莫札特創作的《費加洛婚禮》是一部幾幕的喜歌劇？", opts: ["四幕", "二幕", "三幕", "五幕"], ans: 0 },
+            { q: "《魔笛》首演於哪一個城市的維登劇院？", opts: ["維也納", "巴黎", "羅馬", "威尼斯"], ans: 0 },
+            { q: "《茶花女》原文名字 `La traviata` 的字面意思是？", opts: ["迷途的羔羊", "永恆的愛戀", "巴黎的交際花", "命運的交織"], ans: 0 },
+            { q: "華格納《尼貝龍根的指環》取材自哪裡的神話？", opts: ["北歐神話", "希臘神話", "羅馬神話", "埃及神話"], ans: 0 }
+        ];
+
+        // 第三關：包含作曲家題、劇名題、演唱角色題
+        const videoDatabase = [
+            { type: 'composer', q: "觀看以下影片片段，請問這是哪一位作曲家的著名歌劇作品？", opts: ["莫札特", "威爾第", "華格納", "普契尼"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807710347-e75b6c2e-45e4-40b0-abc7-994dc0d27774.mp4" },
+            { type: 'composer', q: "觀看以下影片片段，請問本樂曲的作曲家為下列何者？", opts: ["莫札特", "威爾第", "華格納", "普契尼"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807830964-8db01ad9-6935-4a29-93a8-cf6bdcc82a3c.mp4" },
+            { type: 'composer', q: "觀看以下影片片段，請問此作品的作曲家是？", opts: ["莫札特", "威爾第", "比才", "蓋希文"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807931582-1d14482a-fd9f-4115-880b-377a0597ea19.mp4" },
+            { type: 'composer', q: "觀看以下影片片段，請問這是哪位大師的作品？", opts: ["莫札特", "浦契尼", "華格納", "威爾第"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807994183-2ade4895-eb73-459e-9a74-55a2dc4d9623.mp4" },
+            { type: 'composer', q: "觀看以下影片片段，請問這首經典詠嘆調的創作者是誰？", opts: ["莫札特", "威爾第", "普契尼", "華格納"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784808079902-cd1b7bd0-886e-436b-ab55-2192c08f6a43.mp4" },
+            { type: 'opera', q: "觀看以下影片片段，請問這屬於哪一齣著名歌劇？", opts: ["茶花女", "魔笛", "杜蘭朵公主", "費加洛婚禮"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807568340-55d16851-c96b-4818-a385-18fcf1b1309d.mp4" },
+            { type: 'opera', q: "觀看以下影片片段，請問本段表演出自哪一部歌劇？", opts: ["茶花女", "波希米亞人", "托斯卡", "蝴蝶夫人"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807608394-8823cca2-c292-411d-9549-b536dfe3ade1.mp4" },
+            { type: 'opera', q: "觀看以下影片片段，請問這是哪一齣歌劇中的著名唱段？", opts: ["茶花女", "魔笛", "費加洛婚禮", "杜蘭朵公主"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807638881-30eedd5d-300a-44a3-91c2-c3fef56149a7.mp4" },
+            { type: 'opera', q: "觀看以下影片片段，請問本段音樂出自哪一部歌劇？", opts: ["波希米亞人", "茶花女", "杜蘭朵公主", "魔笛"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807491324-55b1a254-9054-4312-8b20-ecd12a7c8457.mp4" },
+            { type: 'opera', q: "觀看以下影片片段，請問這是哪一齣膾炙人口的歌劇？", opts: ["杜蘭朵公主", "波希米亞人", "茶花女", "魔笛"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807446040-c15858b3-a6b2-4c99-b5b0-04eebfb07410.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問畫面中演唱該角色的劇名與人物為何？", opts: ["費加洛婚禮 - 費加洛", "魔笛 - 塔米諾", "茶花女 - 阿爾弗雷多", "波希米亞人 - 魯道夫"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807710347-e75b6c2e-45e4-40b0-abc7-994dc0d27774.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問演唱此段曲目的劇名與角色是？", opts: ["費加洛婚禮 - 凱魯比諾", "魔笛 - 帕帕基諾", "茶花女 - 薇奧麗塔", "杜蘭朵公主 - 柳兒"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807830964-8db01ad9-6935-4a29-93a8-cf6bdcc82a3c.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問出場角色的劇名與身分組合為？", opts: ["魔笛 - 帕帕基諾", "費加洛婚禮 - 費加洛", "杜蘭朵公主 - 卡拉富", "波希米亞人 - 柯林"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807931582-1d14482a-fd9f-4115-880b-377a0597ea19.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問這是哪一齣劇中哪位角色？", opts: ["魔笛 - 帕帕基諾與帕帕基娜", "費加洛婚禮 - 費加洛與蘇珊娜", "茶花女 - 阿爾弗雷多與薇奧麗塔", "波希米亞人 - 魯道夫與咪咪"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807994183-2ade4895-eb73-459e-9a74-55a2dc4d9623.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問演唱此高難度花腔曲目的劇名與角色？", opts: ["魔笛 - 夜后", "茶花女 - 薇奧麗塔", "杜蘭朵公主 - 杜蘭朵", "波希米亞人 - 穆塞塔"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784808079902-cd1b7bd0-886e-436b-ab55-2192c08f6a43.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問本段演出的劇名與角色為何？", opts: ["茶花女 - 薇奧麗塔", "波希米亞人 - 咪咪", "杜蘭朵公主 - 柳兒", "費加洛婚禮 - 伯爵夫人"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807568340-55d16851-c96b-4818-a385-18fcf1b1309d.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問劇名與演出角色為？", opts: ["茶花女 - 薇奧麗塔", "波希米亞人 - 咪咪", "托斯卡 - 托斯卡", "蝴蝶夫人 - 巧巧桑"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807608394-8823cca2-c292-411d-9549-b536dfe3ade1.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問這是哪齣劇中男女主角的經典對唱？", opts: ["茶花女 - 阿爾弗雷多與薇奧麗塔", "費加洛婚禮 - 費加洛與蘇珊娜", "波希米亞人 - 魯道夫與咪咪", "杜蘭朵公主 - 卡拉富與杜蘭朵"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807638881-30eedd5d-300a-44a3-91c2-c3fef56149a7.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問主角的劇名與角色是？", opts: ["波希米亞人 - 咪咪", "茶花女 - 薇奧麗塔", "杜蘭朵公主 - 柳兒", "蝴蝶夫人 - 蝴蝶夫人"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807491324-55b1a254-9054-4312-8b20-ecd12a7c8457.mp4" },
+            { type: 'role', q: "觀看以下影片片段，請問這是哪一齣劇中男主角的著名選曲？", opts: ["杜蘭朵公主 - 卡拉富王子", "波希米亞人 - 魯道夫", "魔笛 - 塔米諾王子", "費加洛婚禮 - 伯爵"], ans: 0, url: "https://www.image2url.com/r2/default/videos/1784807446040-c15858b3-a6b2-4c99-b5b0-04eebfb07410.mp4" }
+        ];
+
+        // 輔助函數：洗牌與平均分配選項
+        function shuffleArray(array) {
+            let arr = [...array];
+            for (let i = arr.length - 1; i > 0; i--) {
+                let j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+            return arr;
+        }
+
+        function generateBalancedQuestions(pool, targetCount) {
+            let extendedPool = [];
+            while (extendedPool.length < targetCount) {
+                let shuffled = shuffleArray(pool);
+                extendedPool = extendedPool.concat(shuffled);
+            }
+            extendedPool = extendedPool.slice(0, targetCount);
+
+            // 平均分配答案位置 (0:A, 1:B, 2:C, 3:D)
+            let targetAnsDistribution = [
+                Math.ceil(targetCount / 4),
+                Math.floor(targetCount / 4),
+                Math.floor(targetCount / 4),
+                Math.floor(targetCount / 4)
+            ];
+            while(targetAnsDistribution.reduce((a,b)=>a+b, 0) < targetCount) {
+                targetAnsDistribution[0]++;
+            }
+
+            let assignedAns = [];
+            for(let i=0; i<4; i++) {
+                for(let j=0; j<targetAnsDistribution[i]; j++) {
+                    assignedAns.push(i);
+                }
+            }
+            assignedAns = shuffleArray(assignedAns);
+
+            return extendedPool.map((item, idx) => {
+                let originalOpts = [...item.opts];
+                let correctText = originalOpts[item.ans];
+                
+                let wrongOpts = originalOpts.filter((_, i) => i !== item.ans);
+                wrongOpts = shuffleArray(wrongOpts);
+
+                let finalOpts = [];
+                let desiredCorrectIdx = assignedAns[idx];
+
+                let wIdx = 0;
+                for(let i=0; i<4; i++) {
+                    if(i === desiredCorrectIdx) {
+                        finalOpts.push(correctText);
+                    } else {
+                        finalOpts.push(wrongOpts[wIdx++]);
+                    }
+                }
+
+                return {
+                    q: item.q,
+                    opts: finalOpts,
+                    ans: desiredCorrectIdx,
+                    url: item.url || null
+                };
+            });
+        }
+
+        // ==================== 畫面渲染主控制器 ====================
+        function render() {
+            const app = document.getElementById('app');
+            if (gameState === 'home') {
+                app.innerHTML = `
+                    <div class="bg-white/80 backdrop-blur-md rounded-3xl p-6 sm:p-10 shadow-xl border border-purple-100 text-center animate-fade-in my-auto">
+                        <div class="inline-block bg-purple-100 text-purple-700 font-bold px-4 py-1.5 rounded-full text-sm mb-4">康軒國中音樂 2上 第六課</div>
+                        <h1 class="text-3xl sm:text-5xl font-black text-purple-900 mb-3 tracking-tight">🎭 歌劇停看聽 🎵</h1>
+                        <p class="text-slate-600 text-sm sm:text-base mb-8 max-w-lg mx-auto">挑戰 50 道精選歌劇闖關題目！橫跨歌劇起源、大師經典與精彩樂曲欣賞，快來測試你的音樂實力吧！</p>
+                        
+                        <div class="bg-purple-50/70 p-6 rounded-2xl max-w-sm mx-auto mb-8 border border-purple-100 text-left">
+                            <label class="block text-slate-700 font-bold mb-2 text-sm">請輸入 5 位數字（前三碼班級 + 兩碼座號）：</label>
+                            <input type="text" id="input-student-id" maxlength="5" placeholder="例如：80105" 
+                                class="w-full px-4 py-3 bg-white border border-purple-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-lg text-center tracking-widest font-bold text-purple-900 shadow-inner"
+                                value="${currentUser.studentId}">
+                            <p class="text-xs text-slate-400 mt-2 text-center">例：80105 代表 801班 05號</p>
+                        </div>
+
+                        <!-- 開始挑戰按鈕：白色、放大、置中 -->
+                        <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                            <button onclick="startGame()" class="w-full sm:w-80 bg-white hover:bg-purple-50 text-purple-700 hover:text-purple-800 font-black text-xl py-5 rounded-2xl shadow-xl shadow-purple-200 border-2 border-purple-200 transition transform hover:-translate-y-0.5">
+                                開始挑戰
+                            </button>
+                        </div>
+
+                        <div class="mt-6">
+                            <button onclick="goToTeacherLogin()" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-sm px-6 py-3 rounded-xl transition">
+                                👨‍🏫 教師後台登入
+                            </button>
+                        </div>
+                    </div>
+                `;
+            } else if (gameState === 'playing') {
+                let currentQ = levelQuestions[currentQuestionIndex];
+                let totalQInLevel = levelQuestions.length;
+                let progressPercent = ((currentQuestionIndex) / totalQInLevel) * 100;
+
+                app.innerHTML = `
+                    <div class="bg-white/90 backdrop-blur-md rounded-3xl p-6 sm:p-8 shadow-xl border border-purple-100 animate-fade-in my-auto">
+                        <div class="flex flex-wrap justify-between items-center mb-6 gap-2">
+                            <div class="flex items-center gap-2">
+                                <span class="bg-purple-600 text-white font-bold px-3 py-1 rounded-xl text-sm">第 ${currentLevel} 關</span>
+                                <span class="text-slate-500 text-sm font-medium">進度：第 ${currentQuestionIndex + 1} / ${totalQInLevel} 題</span>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <span class="text-xs sm:text-sm font-bold text-purple-700 bg-purple-100 px-3 py-1 rounded-xl">座號：${currentUser.studentId}</span>
+                                <div id="timer-display" class="text-xs sm:text-sm font-bold text-slate-600 bg-slate-100 px-3 py-1 rounded-xl">⏱️ 00:00</div>
+                            </div>
+                        </div>
+
+                        <div class="w-full bg-purple-100 h-2.5 rounded-full mb-6 overflow-hidden">
+                            <div class="bg-purple-600 h-full transition-all duration-300 rounded-full" style="width: ${progressPercent}%"></div>
+                        </div>
+
+                        ${currentQ.url ? `
+                            <div class="mb-6 rounded-2xl overflow-hidden shadow-lg border border-purple-100 bg-black aspect-video max-w-lg mx-auto flex items-center justify-center">
+                                <video src="${currentQ.url}" controls autoplay class="w-full h-full object-contain"></video>
+                            </div>
+                        ` : ''}
+
+                        <h2 class="text-lg sm:text-2xl font-bold text-slate-900 mb-6 leading-snug text-center">${currentQ.q}</h2>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                            ${currentQ.opts.map((opt, idx) => `
+                                <button onclick="handleAnswer(${idx})" class="group text-left p-4 sm:p-5 rounded-2xl border-2 border-purple-100 hover:border-purple-500 hover:bg-purple-50/50 bg-white transition shadow-sm flex items-center gap-4">
+                                    <span class="w-8 h-8 rounded-xl bg-purple-100 group-hover:bg-purple-600 group-hover:text-white text-purple-700 font-bold flex items-center justify-center transition shrink-0">
+                                        ${['A', 'B', 'C', 'D'][idx]}
+                                    </span>
+                                    <span class="text-slate-700 font-medium text-base sm:text-lg">${opt}</span>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            } else if (gameState === 'certificate') {
+                app.innerHTML = `
+                    <div class="bg-white rounded-3xl p-6 sm:p-10 shadow-2xl border-4 border-amber-300 text-center animate-fade-in my-auto relative overflow-hidden">
+                        <div class="absolute -top-10 -right-10 text-8xl select-none opacity-20 font-black">🏆</div>
+                        <div class="inline-block bg-amber-100 text-amber-800 font-bold px-4 py-1.5 rounded-full text-sm mb-3">恭喜通關！</div>
+                        <h1 class="text-3xl sm:text-4xl font-black text-slate-900 mb-2">🎓 歌劇達人結業證書 🎓</h1>
+                        <p class="text-slate-500 text-sm mb-6">特此證明 <strong>${currentUser.studentId}</strong> 同學成功完成 50 題歌劇全關卡挑戰！</p>
+
+                        <div class="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-6 max-w-sm mx-auto mb-8 shadow-inner">
+                            <div class="text-slate-600 text-sm mb-1">總花費時間</div>
+                            <div id="final-time" class="text-3xl font-black text-amber-600">00:00</div>
+                        </div>
+
+                        <button onclick="backToHome()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg px-8 py-3.5 rounded-2xl shadow-xl shadow-purple-200 transition">
+                            返回首頁重新挑戰
+                        </button>
+                    </div>
+                `;
+                stopTimer();
+                let mins = Math.floor(elapsedTime / 60).toString().padStart(2, '0');
+                let secs = (elapsedTime % 60).toString().padStart(2, '0');
+                document.getElementById('final-time').innerText = `${mins}分 ${secs}秒`;
+            } else if (gameState === 'teacher_login') {
+                app.innerHTML = `
+                    <div class="bg-white rounded-3xl p-6 sm:p-10 shadow-xl border border-purple-100 max-w-md mx-auto animate-fade-in my-auto">
+                        <h2 class="text-2xl font-black text-slate-900 mb-2 text-center">👨‍🏫 教師後台登入</h2>
+                        <p class="text-slate-500 text-sm mb-6 text-center">請輸入教師後台管理密碼</p>
+                        
+                        <div class="mb-6">
+                            <input type="password" id="input-teacher-pass" placeholder="預設密碼：admin" 
+                                class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-center font-bold">
+                        </div>
+
+                        <div class="flex gap-3">
+                            <button onclick="verifyTeacherLogin()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition shadow-lg shadow-purple-200">
+                                登入後台
+                            </button>
+                            <button onclick="backToHome()" class="px-5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition">
+                                返回
+                            </button>
+                        </div>
+                    </div>
+                `;
+            } else if (gameState === 'teacher_dashboard') {
+                app.innerHTML = `
+                    <div class="bg-white rounded-3xl p-6 sm:p-8 shadow-xl border border-purple-100 animate-fade-in my-auto">
+                        <div class="flex flex-wrap justify-between items-center mb-6 gap-4 border-b pb-4">
+                            <div>
+                                <h2 class="text-2xl font-black text-slate-900">📊 教師後台 錯題分析系統</h2>
+                                <p class="text-slate-500 text-sm">依各班級錯題次數排序與統計</p>
+                            </div>
+                            <button onclick="backToHome()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs transition">
+                                登出返回
+                            </button>
+                        </div>
+
+                        <!-- 系統設定面板 -->
+                        <div class="bg-purple-50/50 border border-purple-100 p-4 rounded-2xl mb-6 flex flex-wrap gap-4 items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <input type="password" id="new-pass" placeholder="輸入新後台密碼" class="px-3 py-1.5 bg-white border border-purple-200 rounded-lg text-xs font-medium">
+                                <button onclick="changePassword()" class="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow-md shadow-purple-100">
+                                    儲存密碼
+                                </button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="clearAllCloudData()" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow-md shadow-red-100">
+                                    🗑️ 清除所有數據
+                                </button>
+                                <button onclick="loadTeacherData()" class="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition">
+                                    🔄 重新整理
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 錯題列表 -->
+                        <div id="error-table-container" class="overflow-x-auto max-h-96 overflow-y-auto rounded-2xl border border-slate-100">
+                            <div class="text-center py-10 text-slate-400">正在讀取雲端錯題數據...</div>
+                        </div>
+                    </div>
+                `;
+                loadTeacherData();
+            }
+        }
+
+        // ==================== 遊戲邏輯函數 ====================
+        function startGame() {
+            const studentIdInput = document.getElementById('input-student-id').value.trim();
+            if (studentIdInput.length !== 5 || isNaN(studentIdInput)) {
+                showModal("格式錯誤", "請輸入完整的 5 位數字座號（例如：80105）！", "⚠️");
+                return;
+            }
+            currentUser.studentId = studentIdInput;
+            currentUser.classId = studentIdInput.substring(0, 3);
+
+            levelQuestions = generateBalancedQuestions(rawPoolLevel1, 15);
+            currentLevel = 1;
+            currentQuestionIndex = 0;
+            score = 0;
+
+            elapsedTime = 0;
+            gameState = 'playing';
+            render();
+            startTimer();
+        }
+
+        function startTimer() {
+            stopTimer();
+            startTime = Date.now() - (elapsedTime * 1000);
+            timerInterval = setInterval(() => {
+                elapsedTime = Math.floor((Date.now() - startTime) / 1000);
+                let mins = Math.floor(elapsedTime / 60).toString().padStart(2, '0');
+                let secs = (elapsedTime % 60).toString().padStart(2, '0');
+                let timerEl = document.getElementById('timer-display');
+                if (timerEl) {
+                    timerEl.innerText = `⏱️ ${mins}:${secs}`;
+                }
+            }, 1000);
+        }
+
+        function stopTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+        }
+
+        function handleAnswer(selectedIndex) {
+            let currentQ = levelQuestions[currentQuestionIndex];
+            let isCorrect = (selectedIndex === currentQ.ans);
+
+            if (isCorrect) {
+                currentQuestionIndex++;
+                if (currentQuestionIndex >= levelQuestions.length) {
+                    if (currentLevel === 1) {
+                        currentLevel = 2;
+                        levelQuestions = generateBalancedQuestions(rawPoolLevel2, 15);
+                        currentQuestionIndex = 0;
+                        showModal("🎉 第一關通關！", "太棒了！準備進入第二關：歌劇著名作品！", "👏");
+                    } else if (currentLevel === 2) {
+                        currentLevel = 3;
+                        let shuffledVideo = shuffleArray(videoDatabase);
+                        levelQuestions = generateBalancedQuestions(shuffledVideo, 20);
+                        currentQuestionIndex = 0;
+                        showModal("🎉 第二關通關！", "太厲害了！準備進入第三關：辨識歌劇著名樂曲與角色！", "🏆");
+                    } else {
+                        gameState = 'certificate';
+                        render();
+                        return;
+                    }
+                }
+                render();
+            } else {
+                let userAnsText = currentQ.opts[selectedIndex];
+                let correctAnsText = currentQ.opts[currentQ.ans];
+                
+                // 1. 保留原有的 Firebase 錯題紀錄上傳
+                uploadErrorLog(currentQ.q, userAnsText, correctAnsText);
+
+                // 2. 傳送錯題與轉換後的中文關卡至 Google 試算表對應班級分頁
+                sendWrongAnswerToSheet(
+                    currentUser.studentId,
+                    currentUser.classId,
+                    "level" + currentLevel,
+                    currentQ.q,
+                    userAnsText,
+                    correctAnsText
+                );
+
+                showModal("❌ 答錯囉！", `正確答案是：【${['A','B','C','D'][currentQ.ans]}】${correctAnsText}\n\n規則說明：答錯 1 題該關卡需重新挑戰，題目已重新洗牌！`, "😢");
+                
+                if (currentLevel === 1) {
+                    levelQuestions = generateBalancedQuestions(rawPoolLevel1, 15);
+                } else if (currentLevel === 2) {
+                    levelQuestions = generateBalancedQuestions(rawPoolLevel2, 15);
+                } else {
+                    levelQuestions = generateBalancedQuestions(videoDatabase, 20);
+                }
+                currentQuestionIndex = 0;
+                render();
+            }
+        }
+
+        // ==================== Google 試算表錯題與關卡回傳 ====================
+        function sendWrongAnswerToSheet(studentId, classId, currentLevel, questionText, userAnswerText, correctAnswerText) {
+            var levelMap = {
+                "level1": "第一關",
+                "level2": "第二關",
+                "level3": "第三關",
+                "1": "第一關",
+                "2": "第二關",
+                "3": "第三關"
+            };
+            var translatedLevel = levelMap[currentLevel] || currentLevel;
+
+            // 確保班級代號永遠精準取自座號前 3 碼（801 ~ 819 皆適用）
+            var cleanStudentId = (studentId || "").toString().trim();
+            var cleanClassId = cleanStudentId.length >= 3 ? cleanStudentId.substring(0, 3) : (classId || "未填班級");
+
+            var postData = {
+                studentId: cleanStudentId || "未填座號",
+                classId: cleanClassId,
+                level: translatedLevel,
+                stage: translatedLevel,
+                question: questionText,
+                userAnswer: userAnswerText,
+                correctAnswer: correctAnswerText
+            };
+
+            // 使用 text/plain;charset=utf-8 搭配 no-cors，避免瀏覽器阻擋跨網域請求
+            fetch("https://script.google.com/macros/s/AKfycbw7VIEldTXuf5eKHcn4ANGaB9CeMXw0DrMkhm9V69B68FhiBXnVOp7uaTDz-rcZd1X0/exec", {
+                method: "POST",
+                mode: "no-cors",
+                headers: {
+                    "Content-Type": "text/plain;charset=utf-8"
+                },
+                body: JSON.stringify(postData)
+            }).then(() => {
+                console.log("已送出班級錯題：", cleanClassId, translatedLevel);
+            }).catch(error => {
+                console.error("回傳失敗：", error);
+            });
+        }
+
+        // ==================== Firebase 雲端錯誤紀錄 ====================
+        function uploadErrorLog(questionText, userAnswer, correctAnswer) {
+            if (!db) return;
+            db.collection('errorLogs').add({
+                studentId: currentUser.studentId,
+                classId: currentUser.classId,
+                question: questionText,
+                userAnswer: userAnswer,
+                correctAnswer: correctAnswer,
+                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            }).catch(err => {
+                console.warn("錯題上傳提示：", err);
+            });
+        }
+
+        // ==================== 教師後台相關函數 ====================
+        function goToTeacherLogin() {
+            gameState = 'teacher_login';
+            render();
+        }
+
+        function verifyTeacherLogin() {
+            let pass = document.getElementById('input-teacher-pass').value;
+            if (pass === teacherPassword) {
+                gameState = 'teacher_dashboard';
+                render();
+            } else {
+                showModal("密碼錯誤", "請輸入正確的教師後台密碼！", "🔒");
+            }
+        }
+
+        function changePassword() {
+            let newPass = document.getElementById('new-pass').value.trim();
+            if (newPass.length < 3) {
+                showModal("密碼太短", "新密碼長度至少需要 3 個字元！", "⚠️");
+                return;
+            }
+            teacherPassword = newPass;
+            localStorage.setItem('teacher_pass', newPass);
+            showModal("修改成功", "教師後台登入密碼已成功更新！", "✅");
+            document.getElementById('new-pass').value = '';
+        }
+
+        function clearAllCloudData() {
+            if (!db) {
+                showModal("提示", "雲端資料庫尚未連線", "ℹ️");
+                return;
+            }
+            if (confirm("確定要清除雲端所有學生的錯題紀錄嗎？此動作無法復原！")) {
+                db.collection('errorLogs').get().then(snapshot => {
+                    let batch = db.batch();
+                    snapshot.docs.forEach(doc => {
+                        batch.delete(doc.ref);
+                    });
+                    return batch.commit();
+                }).then(() => {
+                    showModal("清除成功", "雲端所有錯題數據已全數清空！", "🧹");
+                    loadTeacherData();
+                }).catch(err => {
+                    showModal("清除失敗", "清除數據時發生錯誤：" + err.message, "❌");
+                });
+            }
+        }
+
+        function loadTeacherData() {
+            const container = document.getElementById('error-table-container');
+            if (!db) {
+                container.innerHTML = `<div class="text-center py-10 text-red-500 font-medium">雲端資料庫未連線</div>`;
+                return;
+            }
+
+            db.collection('errorLogs').get().then(snapshot => {
+                if (snapshot.empty) {
+                    container.innerHTML = `<div class="text-center py-10 text-slate-400 font-medium">目前尚無任何學生上傳的錯題紀錄</div>`;
+                    return;
+                }
+
+                let questionStats = {};
+                snapshot.docs.forEach(doc => {
+                    let data = doc.data();
+                    let qText = data.question || "未知題目";
+                    let cAns = data.correctAnswer || "未知答案";
+                    let cId = data.classId || "未分類";
+
+                    let key = qText + "___" + cAns;
+                    if (!questionStats[key]) {
+                        questionStats[key] = { question: qText, correctAnswer: cAns, totalErrors: 0, classes: {} };
+                    }
+                    questionStats[key].totalErrors++;
+                    questionStats[key].classes[cId] = (questionStats[key].classes[cId] || 0) + 1;
+                });
+
+                let sortedStats = Object.values(questionStats).sort((a, b) => b.totalErrors - a.totalErrors);
+
+                let html = `
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-purple-50 text-purple-900 text-xs sm:text-sm uppercase tracking-wider border-b border-purple-100">
+                                <th class="p-3.5">排名</th>
+                                <th class="p-3.5">錯題內容與正確答案</th>
+                                <th class="p-3.5 text-center">總錯題數</th>
+                                <th class="p-3.5">各班錯題分佈</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-sm">
+                `;
+
+                sortedStats.forEach((item, index) => {
+                    let classDistStr = Object.entries(item.classes)
+                        .sort((a,b) => b[1] - a[1])
+                        .map(([cls, count]) => `<span class="bg-purple-100 text-purple-800 font-semibold px-2 py-0.5 rounded text-xs mr-1 mb-1 inline-block">${cls}班: ${count}次</span>`)
+                        .join('');
+
+                    html += `
+                        <tr class="hover:bg-purple-50/30 transition">
+                            <td class="p-3.5 font-bold text-slate-500">#${index + 1}</td>
+                            <td class="p-3.5 text-slate-800 font-medium max-w-xs sm:max-w-md">
+                                <div class="font-bold mb-1">${item.question}</div>
+                                <div class="text-xs text-emerald-700 bg-emerald-50 px-2 py-1 rounded inline-block">✅ 正確答案：${item.correctAnswer}</div>
+                            </td>
+                            <td class="p-3.5 text-center font-black text-purple-700 text-base">${item.totalErrors}</td>
+                            <td class="p-3.5">${classDistStr}</td>
+                        </tr>
+                    `;
+                });
+
+                html += `</tbody></table>`;
+                container.innerHTML = html;
+            }).catch(err => {
+                container.innerHTML = `<div class="text-center py-10 text-red-500 font-medium">無法讀取雲端數據：${err.message}</div>`;
+            });
+        }
+
+        function backToHome() {
+            stopTimer();
+            gameState = 'home';
+            render();
+        }
+
+        // ==================== 彈跳視窗控制 ====================
+        function showModal(title, message, icon = "💡") {
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-message').innerText = message;
+            document.getElementById('modal-icon').innerText = icon;
+            const modal = document.getElementById('custom-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('custom-modal');
+            modal.classList.remove('flex');
+            modal.classList.add('hidden');
+        }
+
+        window.onload = () => {
+            render();
+        };
+    </script>
+</body>
+</html>
